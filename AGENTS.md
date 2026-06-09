@@ -23,23 +23,38 @@ make lint               # ruff check + ruff format --diff
 make format             # ruff format + ruff check --fix
 ```
 
-`langgraph.json` declares three graph entrypoints and the FastAPI app, all served together by `langgraph dev`:
+`langgraph.json` declares four graph entrypoints and the FastAPI app, all served together by `langgraph dev`:
 
 | Graph | Entrypoint | Purpose |
 |---|---|---|
 | `agent` | `agent.server:get_agent` | Main coding agent (Slack/Linear/GitHub-triggered). |
 | `reviewer` | `agent.reviewer:get_reviewer_agent` | Read-only PR reviewer. Findings model + `publish_review`. |
 | `analyzer` | `agent.analyzer:get_analyzer` | Learns per-repo reviewer style from historical PRs and this reviewer's own finding outcomes. |
+| `scheduler` | `agent.scheduler:get_scheduler` | Tiny graph that fans dashboard-managed cron schedules into fresh `agent` threads. |
 
 The FastAPI app is `agent.webapp:app`.
+
+### Dashboard UI (`ui/`)
+
+TanStack Start + React 19 + Vite app. Bun is canonical (`ui/bun.lock`); run from `ui/`:
+
+```bash
+bun install
+bun run dev          # vite dev --port 3000 (needs VITE_DASHBOARD_API_BASE_URL in ui/.env)
+bun run build        # vite build
+bun run test         # vitest run
+bun run lint         # eslint
+bun run typecheck    # tsc --noEmit
+```
 
 ## Architecture
 
 ### Entrypoints
 
 - **`agent/server.py` → `get_agent(config)`** — main graph factory. Called per-thread. Resolves the GitHub token, gets-or-creates the sandbox for the thread, resolves the team/profile/per-thread model + effort, then constructs a fresh `create_deep_agent(...)` with the curated tool list and middleware stack. The agent itself is stateless — all per-thread state lives in the sandbox + thread metadata.
-- **`agent/reviewer.py` → `get_reviewer_agent(config)`** — reviewer graph factory. Shares `ensure_sandbox_for_thread` with the main agent but wires a reviewer-only toolset (`add_finding`, `update_finding`, `list_findings`, `publish_review`, `web_search`, `fetch_url`, `http_request`) and a different system prompt that pins the single-evolving-findings model and the diff-anchored bar for filing a finding. Read-only: no commit/push/PR-opening tools.
+- **`agent/reviewer.py` → `get_reviewer_agent(config)`** — reviewer graph factory. Shares `ensure_sandbox_for_thread` with the main agent but wires a reviewer-only toolset (`add_finding`, `update_finding`, `list_findings`, `publish_review`, `resolve_finding_thread`, `reply_to_finding_thread`, `web_search`, `fetch_url`, `http_request`) and a different system prompt that pins the single-evolving-findings model and the diff-anchored bar for filing a finding. Read-only: no commit/push/PR-opening tools.
 - **`agent/analyzer.py` → `get_analyzer(config)`** — small graph that emits a per-repo style prompt via the `save_review_style_prompt` tool, consumed by the reviewer as a "repository-specific review style" appendix. It runs in one of two modes (`analyzer_mode` in `configurable`): **bootstrap** (cold-start: crawl historical PR reviews) and **continual** (nightly: refine using this reviewer's own finding outcomes via `read_finding_outcomes`). Each mode's procedure lives in a deepagents **skill** (`agent/skills/bootstrap-repo-analysis/`, `agent/skills/continual-learning/`) served as virtual files via a `CompositeBackend` `/skills/` route + `StateBackend` (seeded into the run's `files` channel by the launcher — never written to the sandbox). Launchers and the per-repo nightly cron live in `agent/dashboard/review_style_jobs.py` and `agent/dashboard/analyzer_cron.py`; the cron is registered when bootstrap completes.
+- **`agent/scheduler.py` → `get_scheduler(config)`** — minimal StateGraph with a single `launch` node: a LangGraph cron tick carrying a `schedule_id` calls `agent/dashboard/schedules.py:launch_scheduled_agent_run`, which starts a fresh main-agent thread. Schedules (prompt + 5-field cron + repo) are CRUD-managed from the dashboard.
 - **`agent/webapp.py`** — custom FastAPI routes mounted alongside the LangGraph server. Webhooks land here (GitHub, Linear, Slack). Each webhook resolves a deterministic `thread_id` (so follow-up messages route to the same agent run) and triggers/streams a run via the `langgraph_sdk` client. Also auto-reviews PRs on `opened` / `ready_for_review` events when the repo+author opt in.
 - **`agent/dashboard/`** — `router` mounted under the FastAPI app at startup (`app.include_router(dashboard_router)`). Owns GitHub OAuth, per-user profiles, admin endpoints, team defaults, enabled-repo lists, review-style management, and the Agents chat thread API used by the UI in `ui/`.
 
@@ -71,7 +86,7 @@ Configured in `agent/server.py:get_agent`, runs around every model call (in this
 9. `ModelFallbackMiddleware` (optional) — added only when `LLM_FALLBACK_MODEL_ID` or the per-model default fallback differs from the primary model.
 10. `SanitizeThinkingBlocksMiddleware` — strips malformed empty Anthropic thinking blocks immediately before provider calls.
 
-Other middleware exists in `agent/middleware/` (`ExcludeToolsMiddleware`) but isn't wired into the default agent. The reviewer uses a leaner stack: `SanitizeToolInputsMiddleware`, `ModelCallLimitMiddleware`, `ToolErrorMiddleware`, `SlackAssistantStatusMiddleware`, `SanitizeThinkingBlocksMiddleware`.
+Other middleware exists in `agent/middleware/` (`ExcludeToolsMiddleware`) but isn't wired into the default agent. The reviewer uses a leaner stack: `SanitizeToolInputsMiddleware`, `ModelCallLimitMiddleware`, `ToolErrorMiddleware`, `check_message_queue_before_model`, `SlackAssistantStatusMiddleware`, `SanitizeThinkingBlocksMiddleware`.
 
 There is intentionally no after-agent safety net that opens a PR for the agent. The agent itself is responsible for committing, pushing, opening/updating the draft PR, and replying in the source channel — all via `GH_TOKEN=dummy gh` and `slack_thread_reply` / `linear_comment`.
 
@@ -80,11 +95,11 @@ There is intentionally no after-agent safety net that opens a PR for the agent. 
 All tools live in `agent/tools/` and are flat-imported via `agent/tools/__init__.py`. The set is intentionally small and curated — see README "Tools — Curated, Not Accumulated".
 
 Wired into `get_agent`:
-`http_request`, `fetch_url`, `web_search`, `linear_comment`, `linear_create_issue`, `linear_delete_issue`, `linear_get_issue`, `linear_get_issue_comments`, `linear_list_teams`, `linear_update_issue`, `request_pr_review`, `slack_read_thread_messages`, `slack_thread_reply`.
+`http_request`, `fetch_url`, `web_search`, `linear_comment`, `linear_create_issue`, `linear_delete_issue`, `linear_get_issue`, `linear_get_issue_comments`, `linear_list_teams`, `linear_update_issue`, `open_pull_request`, `request_pr_review`, `slack_read_thread_messages`, `slack_thread_reply`.
 
-Reviewer-only tools (in `agent/reviewer.py`): `add_finding`, `update_finding`, `list_findings`, `publish_review`. The review-style analyzer uses `save_review_style` (exported as `save_review_style_prompt`).
+Reviewer-only tools (in `agent/reviewer.py`): `add_finding`, `update_finding`, `list_findings`, `publish_review`, `resolve_finding_thread`, `reply_to_finding_thread`. The review-style analyzer uses `save_review_style` (exported as `save_review_style_prompt`) plus `read_finding_outcomes` in continual mode.
 
-Built-in deepagents tools (`read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep`, `execute`, `write_todos`, `task` for subagent spawning, …) are added by `create_deep_agent` itself; don't duplicate them.
+Built-in deepagents tools (`read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep`, `execute`, `write_todos`, `task` for subagent spawning, …) are added by `create_deep_agent` itself; don't duplicate them. Both the agent and reviewer register the deepagents general-purpose subagent explicitly (`_general_purpose_subagent`) so its model — resolved separately as the "subagent model" — can differ from the main model.
 
 ### Models, profiles, and team defaults
 
@@ -115,3 +130,4 @@ Webhooks compute deterministic thread ids so the same Linear issue / Slack threa
 - New dashboard endpoints: add to `agent/dashboard/routes.py`. The router is auto-mounted on the FastAPI app.
 - New graphs: register the entrypoint in `langgraph.json` under `graphs`.
 - Minimal-to-no code comments — only when the *why* isn't obvious from the code.
+- `CLAUDE.md` and `AGENTS.md` are intentional near-duplicates (same content, different audience header). When updating one, apply the same change to the other.
