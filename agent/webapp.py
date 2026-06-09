@@ -112,7 +112,13 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from .utils.sandbox import validate_sandbox_startup_config
 
-    validate_sandbox_startup_config()
+    try:
+        validate_sandbox_startup_config()
+    except ValueError:
+        logger.exception(
+            "Sandbox startup config invalid — starting anyway; "
+            "runs that need a sandbox will fail until this is fixed"
+        )
     yield
 
 
