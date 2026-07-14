@@ -1,0 +1,5 @@
+{
+  "env": {
+    "CC_LANGSMITH_PROJECT": "tmn-nebby"
+  }
+}

@@ -131,3 +131,12 @@ Webhooks compute deterministic thread ids so the same Linear issue / Slack threa
 - New graphs: register the entrypoint in `langgraph.json` under `graphs`.
 - Minimal-to-no code comments — only when the *why* isn't obvious from the code.
 - `CLAUDE.md` and `AGENTS.md` are intentional near-duplicates (same content, different audience header). When updating one, apply the same change to the other.
+
+<!-- team-context-pointer:start -->
+## Team Context (shared memory)
+
+This repo's cross-project context + memory live in your workspace's **team-context** store
+(`$CLAUDE_CONFIG_DIR`). Load `boundary/RULES.md` → `projects-context/tmn/CONTEXT.md` →
+`memory/tmn/`, and persist back with **`/tmn-sync`**. If it isn't set up locally, run
+**`/tmn-context`** first. Workspace layout + setup: your team-context `README.md`.
+<!-- team-context-pointer:end -->
