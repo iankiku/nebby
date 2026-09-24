@@ -1,8 +1,10 @@
 # AGENTS.md
 
-This file provides guidance to Coding Agents when working with code in this repository.
+This file provides guidance to coding agents (Claude Code, Codex, and others) working in this repository. `CLAUDE.md` imports it — edit this file only.
 
 ## Project
+
+This repo (`iankiku/nebby`) is Team Nebula's fork of [Open SWE](https://github.com/langchain-ai/open-swe) (git remote `upstream`). Branch from and open PRs against `origin` (`iankiku/nebby`), never `upstream` — pass `-R iankiku/nebby` to `gh` if it resolves to the upstream repo.
 
 Open SWE is an open-source coding-agent framework built on **LangGraph** + **Deep Agents** (`deepagents.create_deep_agent`). It runs as a LangGraph app: each thread spawns its own isolated cloud sandbox, and the agent is invoked from Slack, Linear, or GitHub (PR comments, plus auto-review on opened / ready-for-review).
 
@@ -130,4 +132,5 @@ Webhooks compute deterministic thread ids so the same Linear issue / Slack threa
 - New dashboard endpoints: add to `agent/dashboard/routes.py`. The router is auto-mounted on the FastAPI app.
 - New graphs: register the entrypoint in `langgraph.json` under `graphs`.
 - Minimal-to-no code comments — only when the *why* isn't obvious from the code.
-- `CLAUDE.md` and `AGENTS.md` are intentional near-duplicates (same content, different audience header). When updating one, apply the same change to the other.
+- Secrets: 1Password is the source of truth; `.env` is local-only and gitignored — never commit it.
+- Merge and deploy authority follows `boundary/RULES.md` §4 in `teamnebula-ai/team-context`: finish the job (merge once required checks + reviews pass, deploy via this repo's pipeline), never bypass branch protection; unattended agents open the PR and stop.
